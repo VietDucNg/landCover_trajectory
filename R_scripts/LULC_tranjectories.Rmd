@@ -1,0 +1,571 @@
+---
+title: "LULC trajectories"
+author:
+- name: <br>Viet Nguyen
+  affiliation: Institute of Geography and Geology <br> University of Greifswald
+  email: Duc.Nguyen@uni-greifswald.de
+date: "August, 2024"
+output:
+  html_document: 
+    fig_width: 10
+    fig_height: 8
+    df_print: paged
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    collapsed: false
+    fig_caption: true
+subtitles: Cluster landcover change trajectories
+---
+
+```{r, setup, include=FALSE}
+# check wd
+getwd()
+
+# change wd
+knitr::opts_knit$set(root.dir = 'O:/Fernerkundung-GIS/_staff/Farina/4Viet/Viet')
+```
+
+```{r include=FALSE}
+# check where R load libraries
+.libPaths()
+
+# install packages
+# install.packages("raster")
+# install.packages("TraMineR")
+
+# load library
+library(TraMineR)
+library(raster)
+library(terra)
+library(RColorBrewer)
+library(base64enc)
+library(glue)
+library(highr)
+library(jsonlite)
+library(magrittr)
+library(markdown)
+library(mime)
+library(stringi)
+library(stringr)
+
+```
+
+<br/>
+
+```{r include=FALSE}
+#### parameter before running script
+# threshold of number of raster. All sequences exist in number of raster below this threshold will be deleted.
+n_raster = 1
+# list of cluster level
+n_clusters = c(10,15,20,25)
+# need to convert to new lC code order?
+new_LC_order = TRUE
+# todo: automate figure height of section 4
+
+```
+
+
+
+# 1. Creating sequence object from Land cover
+
+## 1.1. Prepare land cover raster
+
+```{r}
+#### stack all the LULC maps from each year as one
+# get a list of raster name
+raster_names = Sys.glob('data/7classes_all_years/*.tif')
+raster_names
+# stack
+lulc_rast = stack(raster_names)
+lulc_rast
+plot(lulc_rast)
+```
+
+
+## 1.2. convert LULC raster to table
+
+```{r}
+tab = as.data.frame(rasterToPoints(lulc_rast))
+tab
+
+# change to new LC code
+if (new_LC_order == TRUE){
+  tab[tab[] == 1] = 11
+  tab[tab[] == 2] = 12
+  tab[tab[] == 3] = 13
+  tab[tab[] == 4] = 14
+  tab[tab[] == 5] = 15
+  tab[tab[] == 6] = 16
+  tab[tab[] == 7] = 17
+  tab[tab[] == 11] = 7
+  tab[tab[] == 12] = 3
+  tab[tab[] == 13] = 2
+  tab[tab[] == 14] = 6
+  tab[tab[] == 15] = 1
+  tab[tab[] == 16] = 5
+  tab[tab[] == 17] = 4
+}
+
+# create a column of concatened sequence
+tab$seq = apply(tab[, 3:ncol(tab)], 1, paste, collapse = "")
+head(tab$seq)
+```
+
+## 1.3. Thin out the sequences
+
+```{r}
+#### 1. by remove all the stable sequences
+# identify stable sequences
+stable_seq.index = grepl("^([0-9])\\1*$", tab$seq)
+tab[stable_seq.index,]
+sum(stable_seq.index)
+# remove all stable sequences
+tab = tab[!stable_seq.index,]
+tab
+
+# get the number of unique sequences
+unique_traj = sort(unique(tab$seq))
+length(unique_traj)
+
+# get the frequency of these trajectories
+tab_freq = as.data.frame(table(tab$seq))
+# sort the sequences from more to less frequent
+tab_freq = tab_freq[order(tab_freq$Freq,decreasing = TRUE),]
+tab_freq
+
+### 2. remove sequences that only appear in less than [n_raster] rasters
+# find all sequences appear in less than {n_raster} raster
+remove_seq = tab_freq[tab_freq$Freq <= n_raster ,'Var1']
+# how many percent of sequences will be remove?
+length(remove_seq)/nrow(tab)*100
+# remove sequences
+tab = tab[!(tab$seq %in% remove_seq),]
+
+# get the number of unique sequences
+unique_traj = sort(unique(tab$seq))
+length(unique_traj)
+
+# get the frequency of these trajectories
+tab_freq = as.data.frame(table(tab$seq))
+# sort the sequences from more to less frequent
+tab_freq = tab_freq[order(tab_freq$Freq,decreasing = TRUE),]
+tab_freq
+```
+
+
+```{r eval=FALSE, include=FALSE}
+
+# Remove some stable sequences 
+
+Because the sequences to compute dissimilarity has limitation to work with only 46000 sequences, some stable sequences which has the same land cover over all the years will be removed.
+
+#### remove stable sequences
+# how many sequences have to be removed?
+n = nrow(tab) - 46000
+n
+# identify stable sequences
+stable_seq.index = grepl("^([0-9])\\1+$", tab$seq)
+tab[stable_seq.index,]
+sum(stable_seq.index)
+# randomly sample stable sequences
+set.seed(100)
+remove_seq.index = sample(which(stable_seq.index),n)
+# remove n stable sequences to leave only 46000 sequences
+tab = tab[-remove_seq.index,]
+
+```
+
+
+## 1.4. Creation of a state sequence object from land cover type over time
+
+```{r}
+# define landcover dictionary
+if (new_LC_order == TRUE){
+  lc_dict = list('Wetland & Peatland vegetation','Woody (Shrubland and Forest)', 'Water', 'Grassland', 'Cropland', 'Bare peat (exploited)', 'Built-up & bareland')
+  shortName_dict = c('Wetland','Woody', 'Water', 'Grassland', 'Cropland', 'Bare peat', 'Built-up')
+  color_dict = c('#a25fff','#00a700','#00ccf2','#c1ecd0','#e4ce3f','#7a4700','#cc0000')
+} else {
+  lc_dict = list('Built-up & bareland','Water','Woody (Shrubland and Forest)','Bare peat (exploited)','Wetland & Peatland vegetation','Cropland','Grassland')
+# define landcover short name dictionary
+shortName_dict = c('Built-up','Water','Woody','Bare peat','Wetland','Cropland','Grassland')
+# define color code dictionary
+color_dict = c("#cc0000","#00ccf2","#00a700","#7a4700",'#a25fff','#e4ce3f','#c1ecd0')
+}
+
+# get unique landcover class in sequences
+alphabet = sort(unique(unlist(tab[,3:(ncol(tab)-1)])))
+# get label, short name and color code for availabe LC class
+label = c()
+short_label = c()
+color = c()
+for (alpha in alphabet) {
+  label = c(label, lc_dict[alpha])
+  short_label = c(short_label, shortName_dict[alpha])
+  color = c(color, color_dict[alpha])
+}
+label = unlist(label)
+short_label
+color
+
+#  create state sequence object
+tab.seq = seqdef(tab, 3:(ncol(tab)-1), alphabet = alphabet, states = short_label, cpal = color, labels = label)
+
+```
+
+
+## 1.5. visualize the sequence
+
+```{r fig.height=12, fig.width=10}
+# plot 10 random sequences
+some_seq = tab.seq[sample(nrow(tab.seq),10),]
+seqiplot(some_seq, with.legend = T, border = T, main = "10 random sequences")
+
+# Plot all the sequences in the data set, sorted by states from start.
+seqIplot(tab.seq, sortv = "from.start", with.legend = T, main = "All sequences 2000-2020")
+
+# Plot the 10 most frequent sequences.
+seqfplot(tab.seq, with.legend = T, main="10 most common sequences")
+
+```
+
+
+## 1.6. Explore the sequence data set by computing and visualizing descriptive statistics
+
+```{r fig.height=12, fig.width=10}
+# plot the state distributions by time step. 
+seqdplot(tab.seq, with.legend = T, border = NA,main="Land cover (states) distribution", ylab="Proportion of study area")
+
+# Plot dominant land cover of the transversal state distributions.
+seqmsplot(tab.seq, with.legend = T, main ="Most frequent land cover")
+
+# Plot the mean time spent in each land cover category.
+seqmtplot(tab.seq, with.legend = T, main = "Permanence", ylab="Number of 2 years periods")
+
+```
+
+<br/>
+
+# 2. Compute dissimilarity between sequences using different metrics
+
+## 2.1. Optimal matching (OM)
+
+### 2.1.1. OM based on substitution and indel costs
+
+```{r}
+# compute substitution costs based on transition probabilities and indel set as half the maximum substitution cost
+costs.tr <- seqcost(tab.seq, method = "TRATE",with.missing = FALSE)
+print(costs.tr)
+
+# Computes pairwise dissimilarities between sequences by OM
+dist.om1 <- seqdist(tab.seq, method = "OM",indel = costs.tr$indel, sm = costs.tr$sm,with.missing = FALSE)
+dim(dist.om1)
+
+```
+
+### 2.1.2. OM based on features
+
+```{r}
+# create a table of land cover type
+tab_state_features = data.frame(state=alphabet)
+
+# compute "FEATURES" (Gower distance between state features)
+costs.gower = seqcost(tab.seq, method = "FEATURES",with.missing = FALSE,state.features = tab_state_features)
+print(costs.gower)
+
+# Computes pairwise dissimilarities between sequences by OM
+dist.om2 <- seqdist(tab.seq, method = "OM",indel = costs.gower$indel, sm = costs.gower$sm,with.missing = F)
+dim(dist.om2)
+```
+
+## 2.2. Dynamic Hamming
+```{r}
+# Computes pairwise dissimilarities between sequences
+dist.dhd = seqdist(tab.seq, method = "DHD")
+dim(dist.dhd)
+```
+
+## 2.3. subsequence vectorial representation distance ("SVRspell")
+```{r}
+# Computes pairwise dissimilarities between sequences
+dist.svr = seqdist(tab.seq, method = "SVRspell")
+dim(dist.svr)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+## The longest common subsequence distance (LCS)
+# Computes pairwise dissimilarities between sequences by LCS
+dist.lcs = seqdist(tab.seq, method = "LCS")
+dim(dist.lcs)
+```
+
+```{r eval=FALSE, include=FALSE}
+## The longest common prefix (LCP)
+# Computes pairwise dissimilarities between sequences by LCP
+dist.lcp = seqdist(tab.seq, method = "LCP")
+dim(dist.lcp)
+```
+
+<br/>
+
+# 3. Cluster similar sequences
+
+Build a Ward hierarchical clustering of the sequences (a typology of the trajectories) from the different dissimilarity metrics in section 2, and assign each sequence a cluster group.
+
+The hierarchical clustering is cut at 5 cluster group level in oder to compare the results derived form the different dissimilarity metrics.
+
+
+## 3.1. Cluster based on OM transition rates
+
+```{r}
+clusterward_om1 = hclust(as.dist(dist.om1),method="ward.D")
+# plot cluster dendrogram
+plot(clusterward_om1)
+# cut the dendrogram to different cluster level
+for (n_cluster in n_clusters) {
+  assign(paste0('cl_om1_', n_cluster), cutree(clusterward_om1, k = n_cluster))
+}
+# assign each sequence to cluster group
+for (n_cluster in n_clusters) {
+  col_name = paste0('clusterom1_', n_cluster)
+  var_name = paste0('cl_om1_', n_cluster)
+  tab[[col_name]] = get(var_name)
+}
+
+head(tab)
+```
+
+
+## 3.2. Cluster based on OM features
+
+```{r}
+clusterward_om2 = hclust(as.dist(dist.om2),method="ward.D")
+# plot cluster dendrogram
+plot(clusterward_om2)
+# cut the dendrogram to different cluster level
+for (n_cluster in n_clusters) {
+  assign(paste0('cl_om2_', n_cluster), cutree(clusterward_om2, k = n_cluster))
+}
+# assign each sequence to cluster group
+for (n_cluster in n_clusters) {
+  col_name = paste0('clusterom2_', n_cluster)
+  var_name = paste0('cl_om2_', n_cluster)
+  tab[[col_name]] = get(var_name)
+}
+
+head(tab)
+```
+
+## 3.3. Cluster based on DHD
+
+```{r}
+clusterward_dhd = hclust(as.dist(dist.dhd),method="ward.D")
+# plot cluster dendrogram
+plot(clusterward_dhd)
+# cut the dendrogram to different cluster level
+for (n_cluster in n_clusters) {
+  assign(paste0('cl_dhd_', n_cluster), cutree(clusterward_dhd, 
+                                              k = n_cluster))
+}
+# assign each sequence to cluster group
+for (n_cluster in n_clusters) {
+  col_name = paste0('clusterdhd_', n_cluster)
+  var_name = paste0('cl_dhd_', n_cluster)
+  tab[[col_name]] = get(var_name)
+}
+
+head(tab)
+```
+
+
+## 3.4. Cluster based on SVRspell 
+
+```{r}
+clusterward_svr = hclust(as.dist(dist.svr),method="ward.D")
+# plot cluster dendrogram
+plot(clusterward_svr)
+# cut the dendrogram to different cluster level
+for (n_cluster in n_clusters) {
+  assign(paste0('cl_svr_', n_cluster), cutree(clusterward_svr, 
+                                              k = n_cluster))
+}
+# assign each sequence to cluster group
+for (n_cluster in n_clusters) {
+  col_name = paste0('clustersvr_', n_cluster)
+  var_name = paste0('cl_svr_', n_cluster)
+  tab[[col_name]] = get(var_name)
+}
+
+head(tab)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+clusterward_lcs = hclust(as.dist(dist.lcs),method="ward.D")
+# plot cluster dendrogram
+plot(clusterward_lcs)
+# cut the dendrogram to different cluster level
+for (n_cluster in n_clusters) {
+  assign(paste0('cl_lcs_', n_cluster), cutree(clusterward_lcs, k = n_cluster))
+}
+# assign each sequence to cluster group
+for (n_cluster in n_clusters) {
+  col_name = paste0('clusterlcs_', n_cluster)
+  var_name = paste0('cl_lcs_', n_cluster)
+  tab[[col_name]] = get(var_name)
+}
+
+head(tab)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+clusterward_lcp = hclust(as.dist(dist.lcp),method="ward.D")
+# plot cluster dendrogram
+plot(clusterward_lcp)
+# cut the dendrogram to different cluster level
+for (n_cluster in n_clusters) {
+  assign(paste0('cl_lcp_', n_cluster), cutree(clusterward_lcp, k = n_cluster))
+}
+# assign each sequence to cluster group
+for (n_cluster in n_clusters) {
+  col_name = paste0('clusterlcp_', n_cluster)
+  var_name = paste0('cl_lcp_', n_cluster)
+  tab[[col_name]] = get(var_name)
+}
+
+head(tab)
+```
+
+<br/>
+
+# 4. Plot all the sequences with each level of cluster from 4 methods
+
+```{r fig.height=30, fig.width=10}
+
+for (n_cluster in n_clusters) {
+  print(paste('plot cluster',n_cluster,'level'))
+  # larger margin for plotting
+  par(mar=c(2,2,3,0))
+  # OM1
+  col_name = paste0('clusterom1_',n_cluster)
+  main = paste0('cluster ',n_cluster,' level of sequences based on OM transition rates')
+  seqIplot(tab.seq, group = tab[[col_name]], sortv = "from.start", main = main)
+  # OM2
+  col_name = paste0('clusterom2_',n_cluster)
+  main = paste0('cluster ',n_cluster,' level of sequences based on OM features')
+  seqIplot(tab.seq, group = tab[[col_name]], sortv = "from.start", main = main)
+  # LCS
+  col_name = paste0('clusterdhd_',n_cluster)
+  main = paste0('cluster ',n_cluster,' level of sequences based on DHD')
+  seqIplot(tab.seq, group = tab[[col_name]], sortv = "from.start", main = main)
+  # LCP
+  col_name = paste0('clustersvr_',n_cluster)
+  main = paste0('cluster ',n_cluster,' level of sequences based on SVRspell')
+  seqIplot(tab.seq, group = tab[[col_name]], sortv = "from.start", main = main)
+}
+```
+
+<br/>
+
+# 5. Plot clusters spatially
+
+```{r eval=FALSE, fig.height=12, fig.width=10, include=FALSE}
+# check brewer color scheme
+display.brewer.all()
+
+```
+
+
+Function to create a raster from cluster column
+
+```{r}
+# load 1 input raster to use as template raster
+template_rast = rast(raster_names[1])
+# function
+raster_cl.func = function(template_rast,tab,cluster.col){
+  # create an empty raster
+  new_rast = rast(ext(template_rast),
+                  crs=crs(template_rast),
+                  resolution=res(template_rast))
+  # get x, y, cluster group number for each pixel
+  xyz = as.data.frame(cbind(tab$x,tab$y,cluster.col))
+  # Convert the dataframe to a SpatVector object
+  points = vect(xyz, geom = c("V1", "V2"), 
+                crs = crs(template_rast))
+  # Rasterize the points into the new raster
+  rast = rasterize(points, new_rast, field="cluster.col")
+  return(rast)
+}
+```
+
+Plot all cluster rasters from 4 methods together
+
+```{r fig.height=8, fig.width=10}
+for (n_cluster in n_clusters) {
+  print(paste('plot cluster',n_cluster,'level'))
+  # create a 2 row x 2 column plotting matrix
+  par(mfrow = c(2,2)) 
+  # larger margin for plotting
+  par(mar=c(2,2,7,2))
+  #### OM1
+  col_name = paste0('clusterom1_',n_cluster)
+  fig_name = paste0('raster_om1_', n_cluster)
+  # create cluster raster
+  assign(fig_name, raster_cl.func(template_rast=template_rast,tab = tab, 
+                                  cluster.col = tab[[col_name]]))
+  # plot
+  plot(get(fig_name), main = 'OM transition rates',
+       col =colorRampPalette(brewer.pal(12,'Set3'))(n_cluster))
+  # write raster
+  writeRaster(x=get(fig_name),filename = paste0('output/',fig_name,'.tif'),
+              overwrite=TRUE)
+  
+  #### OM2
+  col_name = paste0('clusterom2_',n_cluster)
+  fig_name = paste0('raster_om2_', n_cluster)
+  # create cluster raster
+  assign(fig_name, raster_cl.func(template_rast=template_rast,tab = tab,
+                                  cluster.col = tab[[col_name]]))
+  # plot
+  plot(get(fig_name), main = 'OM features', 
+       col=colorRampPalette(brewer.pal(12,'Set3'))(n_cluster))
+  # write raster
+  writeRaster(x=get(fig_name),filename = paste0('output/',fig_name,'.tif'),
+              overwrite=TRUE)
+  
+  #### DHD
+  col_name = paste0('clusterdhd_',n_cluster)
+  fig_name = paste0('raster_dhd_', n_cluster)
+  # create cluster raster
+  assign(fig_name, raster_cl.func(template_rast=template_rast,tab = tab, 
+                                  cluster.col = tab[[col_name]]))
+  # plot
+  plot(get(fig_name), main = 'DHD', 
+       col=colorRampPalette(brewer.pal(12,'Set3'))(n_cluster))
+  # write raster
+  writeRaster(x=get(fig_name),filename = paste0('output/',fig_name,'.tif'),
+              overwrite=TRUE)
+  
+  #### SVRspell
+  col_name = paste0('clustersvr_',n_cluster)
+  fig_name = paste0('raster_svr_', n_cluster)
+  # create cluster raster
+  assign(fig_name, raster_cl.func(template_rast=template_rast,tab = tab, 
+                                  cluster.col = tab[[col_name]]))
+  # plot
+  plot(get(fig_name), main = 'SVRspell', 
+       col=colorRampPalette(brewer.pal(12,'Set3'))(n_cluster))
+  # write raster
+  writeRaster(x=get(fig_name),filename = paste0('output/',fig_name,'.tif'),
+              overwrite=TRUE)
+  
+  #### add title
+  mtext(paste0(n_cluster,'-level Cluster distribution'), side = 3, 
+        line = -2, outer = TRUE, cex=2)
+}
+```
+
+
+
